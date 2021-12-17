@@ -23,6 +23,8 @@ import yaml
 
 
 __yaml_representer_registered = False
+yaml_dumper_list_stride = 0
+yaml_dumper_flow_level = None
 
 
 def __get_type_name(value_type):
@@ -63,6 +65,84 @@ def __represent_ordereddict(dumper, data):
     return yaml.nodes.MappingNode(u'tag:yaml.org,2002:map', items)
 
 
+class ROS2Dumper(yaml.Dumper):
+    def __init__(self, stream,
+        default_style=None, default_flow_style=False,
+        canonical=None, indent=None, width=None,
+        allow_unicode=None, line_break=None,
+        encoding=None, explicit_start=None, explicit_end=None,
+        version=None, tags=None, sort_keys=True):
+        yaml.Dumper.__init__(self, stream=stream,
+            default_style=default_style, default_flow_style=default_flow_style,
+            canonical=canonical, indent=indent, width=width,
+            allow_unicode=allow_unicode, line_break=line_break,
+            encoding=encoding, explicit_start=explicit_start, explicit_end=explicit_end,
+            version=version, tags=tags, sort_keys=sort_keys)
+        self.stride_effect_level = None
+
+    def expect_node(self, root=False, sequence=False, mapping=False, simple_key=False):
+        self.root_context = root
+        self.sequence_context = sequence
+        self.mapping_context = mapping
+        self.simple_key_context = simple_key
+        if isinstance(self.event, yaml.AliasEvent):
+            self.expect_alias()
+        elif isinstance(self.event, (yaml.ScalarEvent, yaml.CollectionStartEvent)):
+            self.process_anchor('&')
+            self.process_tag()
+            global yaml_dumper_list_stride
+            global yaml_dumper_flow_level
+            if self.stride_effect_level and self.stride_effect_level == self.flow_level:
+              if yaml_dumper_list_stride > 0 and self.sequence_context:
+                  if self.index_item % yaml_dumper_list_stride == 0:
+                      self.write_indent()
+                  self.index_item += 1
+
+            if isinstance(self.event, yaml.ScalarEvent):
+                self.expect_scalar()
+            elif isinstance(self.event, yaml.SequenceStartEvent):
+                # make sure not to effect in embedded list
+                if self.flow_level or self.canonical or self.event.flow_style   \
+                        or self.check_empty_sequence():
+                    self.expect_flow_sequence()
+
+                    if not self.stride_effect_level and yaml_dumper_list_stride > 0:
+                        if yaml_dumper_flow_level:
+                            if yaml_dumper_flow_level == self.flow_level:
+                                self.stride_effect_level = yaml_dumper_flow_level
+                        else:
+                          self.stride_effect_level = self.flow_level
+                        self.index_item = 0
+                else:
+                    self.expect_block_sequence()
+            elif isinstance(self.event, yaml.MappingStartEvent):
+                if self.flow_level or self.canonical or self.event.flow_style   \
+                        or self.check_empty_mapping():
+                    self.expect_flow_mapping()
+                else:
+                    self.expect_block_mapping()
+        else:
+            raise yaml.EmitterError("expected NodeEvent, but got %s" % self.event)
+
+    def expect_flow_sequence_item(self):
+        if isinstance(self.event, yaml.SequenceEndEvent):
+            self.indent = self.indents.pop()
+            self.flow_level -= 1
+            if self.canonical:
+                self.write_indicator(',', False)
+                self.write_indent()
+            self.write_indicator(']', False)
+            self.state = self.states.pop()
+            if self.stride_effect_level and self.stride_effect_level == self.flow_level:
+                self.stride_effect_level = None
+        else:
+            self.write_indicator(',', False)
+            if self.canonical or self.column > self.best_width:
+                self.write_indent()
+            self.states.append(self.expect_flow_sequence_item)
+            self.expect_node(sequence=True)
+
+
 def message_to_yaml(
     msg: Any,
     *,
@@ -87,10 +167,25 @@ def message_to_yaml(
         yaml.add_representer(OrderedDict, __represent_ordereddict)
         __yaml_representer_registered = True
 
+    # need to export these two options
+    external_show_list_pretty = True
+    external_list_stride = 8
+    # embedded list might need this level
+    external_flow_level = None
+
+    if external_show_list_pretty:
+        global yaml_dumper_list_stride
+        yaml_dumper_list_stride = external_list_stride
+
+        global yaml_dumper_flow_level
+        yaml_dumper_flow_level = external_flow_level
+
     return yaml.dump(
         message_to_ordereddict(
             msg, truncate_length=truncate_length, no_arr=no_arr, no_str=no_str),
         allow_unicode=True, width=sys.maxsize,
+        Dumper=ROS2Dumper,
+        default_flow_style=external_show_list_pretty
     )
 
 
