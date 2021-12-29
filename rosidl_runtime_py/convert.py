@@ -135,6 +135,7 @@ class ROS2Dumper(yaml.Dumper):
             self.state = self.states.pop()
             if self.stride_effect_level and self.stride_effect_level == self.flow_level:
                 self.stride_effect_level = None
+            self.index_item = 0
         else:
             self.write_indicator(',', False)
             if self.canonical or self.column > self.best_width:
@@ -169,7 +170,7 @@ def message_to_yaml(
 
     # need to export these two options
     external_show_list_pretty = True
-    external_list_stride = 8
+    external_list_stride = 6
     # embedded list might need this level
     external_flow_level = None
 
